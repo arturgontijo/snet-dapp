@@ -1,4 +1,4 @@
-import React, { Fragment, useState, useEffect } from "react";
+import React, { Fragment, useState, useEffect, useCallback } from "react";
 import removeSvg from "../assets/remove.svg";
 import addSvg from "../assets/add.svg";
 import filterSvg from "../assets/filter.svg";
@@ -58,6 +58,11 @@ const AnnotationGroups = [
   {
     group: "biogrid-interaction-annotation",
     color: "#3498DB",
+    subgroups: [],
+  },
+  {
+    group: "rna-annotation",
+    color: "#eb2f96",
     subgroups: [],
   },
 ];
@@ -135,6 +140,15 @@ const CYTOSCAPE_STYLE = [
       "target-arrow-fill": "filled",
     },
   },
+  {
+    selector: e => {
+      return e.group() == "nodes" && e.data().group.includes("rna-annotation");
+    },
+    css: {
+      shape: "round-pentagon",
+      width: 200,
+    },
+  },
 ];
 
 const Visualizer = props => {
@@ -150,13 +164,12 @@ const Visualizer = props => {
     .filter((s, i, arr) => {
       return arr.indexOf(s) === i && ["Genes", "Uniprot", "ChEBI"].includes(s);
     });
-  const [linkTypes, setLinkTypes] = useState(
-    props.graph.edges
-      .map(e => e.data.subgroup)
-      .filter((s, i, arr) => {
-        return arr.indexOf(s) === i;
-      })
-  );
+  const linkTypes = props.graph.edges
+    .map(e => e.data.subgroup)
+    .filter((s, i, arr) => {
+      return arr.indexOf(s) === i;
+    });
+
   const [visibleNodeTypes, setVisibleNodeTypes] = useState(nodeTypes);
   const [visibleLinkTypes, setVisibleLinkTypes] = useState(linkTypes);
   const [visibleAnnotations, setVisibleAnnotations] = useState([
@@ -166,6 +179,7 @@ const Visualizer = props => {
     "gene-go-annotation%molecular_function",
     "gene-pathway-annotation%Reactome",
     "biogrid-interaction-annotation%",
+    "rna-annotation%",
   ]);
   const [selectedNode, setSelectedNode] = useState({
     node: null,
@@ -176,17 +190,18 @@ const Visualizer = props => {
   });
   const [searchToken, setSearchToken] = useState(undefined);
   const [loaderText, setLoaderText] = useState(undefined);
-  const [isDrawerOpen, setDrawerOpen] = useState(true);
+  const [isDrawerOpen, setDrawerOpen] = useState(false);
   const [MLLPositions, setMLLPositions] = useState(undefined);
   // Save MLL positions
   !MLLPositions &&
     setMLLPositions(
-      JSON.parse(JSON.stringify(props.graph.nodes)).reduce(function(prevVal, n, i) {
+      JSON.parse(JSON.stringify(props.graph.nodes)).reduce((prevVal, n, i) => {
         return { ...prevVal, [n.data.id]: n.position };
       }, {})
     );
 
-  useEffect(function() {
+  useEffect(() => {
+    window.scrollTo(0, 0);
     setCy(
       cytoscape({
         container: cy_wrapper.current,
@@ -194,137 +209,124 @@ const Visualizer = props => {
         wheelSensitivity: 0.3,
       })
     );
-    window.scrollTo(0, 0);
-  }, []);
+  }, [cy_wrapper]);
 
-  useEffect(
-    function() {
-      cy && toggleAnnotationVisibility(visibleAnnotations);
-    },
-    [visibleAnnotations, visibleNodeTypes, visibleLinkTypes, cy]
-  );
+  useEffect(() => {
+    cy && toggleAnnotationVisibility(visibleAnnotations);
+  }, [visibleAnnotations, visibleNodeTypes, visibleLinkTypes, cy, toggleAnnotationVisibility]);
 
-  useEffect(
-    function() {
-      if (!cy) return;
-      if (filteredElements) {
-        cy.batch(() => filteredElements.style({ opacity: 1 }));
-        cy.batch(() =>
-          cy
-            .nodes()
-            .difference(filteredElements)
-            .style({ opacity: 0.1 })
-        );
-        cy.edges()
+  useEffect(() => {
+    if (!cy) return;
+    if (filteredElements) {
+      cy.batch(() => filteredElements.style({ opacity: 1 }));
+      cy.batch(() =>
+        cy
+          .nodes()
           .difference(filteredElements)
-          .style({ opacity: 0 });
-        contextMenu.showMenuItem("add");
-        contextMenu.showMenuItem("remove");
-        contextMenu.hideMenuItem("filter");
-        filteredElements.layout(layout).run();
-      } else {
-        cy.batch(() => cy.elements().style({ opacity: 1 }));
-        contextMenu.showMenuItem("filter");
-        contextMenu.hideMenuItem("add");
-        contextMenu.hideMenuItem("remove");
-        cy.layout(layout).run();
-      }
-    },
-    [filteredElements]
-  );
+          .style({ opacity: 0.1 })
+      );
+      cy.edges()
+        .difference(filteredElements)
+        .style({ opacity: 0 });
+      contextMenu.showMenuItem("add");
+      contextMenu.showMenuItem("remove");
+      contextMenu.hideMenuItem("filter");
+      filteredElements.layout(layout).run();
+    } else {
+      cy.batch(() => cy.elements().style({ opacity: 1 }));
+      contextMenu.showMenuItem("filter");
+      contextMenu.hideMenuItem("add");
+      contextMenu.hideMenuItem("remove");
+      cy.layout(layout).run();
+    }
+  }, [contextMenu, cy, filteredElements, layout]);
 
-  useEffect(
-    function() {
-      if (cy) {
-        MLLLayout();
-        cy.style([
-          ...CYTOSCAPE_STYLE,
-          ...assignColorToAnnotations(),
+  useEffect(() => {
+    if (cy) {
+      MLLLayout();
+      cy.style([
+        ...CYTOSCAPE_STYLE,
+        ...assignColorToAnnotations(),
+        {
+          selector: n => n.data().group.includes("main"),
+          style: {
+            "background-fill": "solid",
+            "background-color": "blue",
+            "text-outline-color": "blue",
+          },
+        },
+        {
+          selector: n =>
+            n.data().subgroup.includes("Uniprot") &&
+            n.neighborhood().some(e => {
+              return e.data().group.includes("main");
+            }),
+          style: {
+            "background-color": "blue",
+          },
+        },
+      ]);
+      var options = {
+        menuItems: [
           {
-            selector: n => n.data().group.includes("main"),
-            style: {
-              "background-fill": "solid",
-              "background-color": "blue",
-              "text-outline-color": "blue",
+            id: "filter",
+            content: "Filter",
+            selector: "node",
+            onClickFunction: e => {
+              addToFilter(e.target.data().id);
             },
+            hasTrailingDivider: true,
+            image: { src: filterSvg, width: 18, height: 18, x: 8, y: 8 },
           },
           {
-            selector: n =>
-              n.data().subgroup.includes("Uniprot") &&
-              n.neighborhood().some(function(e) {
-                return e.data().group.includes("main");
-              }),
-            style: {
-              "background-color": "blue",
-            },
+            id: "add",
+            content: "Add",
+            selector: "node",
+            image: { src: addSvg, width: 18, height: 18, x: 8, y: 8 },
+            onClickFunction: e => addToFilter(e.target.data().id),
+            show: false,
           },
-        ]);
-        var options = {
-          menuItems: [
-            {
-              id: "filter",
-              content: "Filter",
-              selector: "node",
-              onClickFunction: e => {
-                addToFilter(e.target.data().id);
-              },
-              hasTrailingDivider: true,
-              image: { src: filterSvg, width: 18, height: 18, x: 8, y: 8 },
+          {
+            id: "remove",
+            content: "Remove",
+            selector: "node",
+            image: { src: removeSvg, width: 18, height: 18, x: 8, y: 8 },
+            onClickFunction: e => removeFromFilter(e.target.data().id),
+            show: false,
+          },
+          {
+            id: "copy",
+            content: "Copy ID",
+            selector: "node",
+            image: { src: copySvg, width: 18, height: 18, x: 8, y: 8 },
+            onClickFunction: e => {
+              const el = document.createElement("textarea");
+              el.value = e.target.data().id;
+              document.body.appendChild(el);
+              el.select();
+              document.execCommand("copy");
+              document.body.removeChild(el);
             },
-            {
-              id: "add",
-              content: "Add",
-              selector: "node",
-              image: { src: addSvg, width: 18, height: 18, x: 8, y: 8 },
-              onClickFunction: e => addToFilter(e.target.data().id),
-              show: false,
-            },
-            {
-              id: "remove",
-              content: "Remove",
-              selector: "node",
-              image: { src: removeSvg, width: 18, height: 18, x: 8, y: 8 },
-              onClickFunction: e => removeFromFilter(e.target.data().id),
-              show: false,
-            },
-            {
-              id: "copy",
-              content: "Copy ID",
-              selector: "node",
-              image: { src: copySvg, width: 18, height: 18, x: 8, y: 8 },
-              onClickFunction: e => {
-                const el = document.createElement("textarea");
-                el.value = e.target.data().id;
-                document.body.appendChild(el);
-                el.select();
-                document.execCommand("copy");
-                document.body.removeChild(el);
-              },
-              show: true,
-            },
-          ],
-          menuItemClasses: ["context-menu-item"],
-          contextMenuClasses: ["context-menu"],
-        };
-        setContextMenu(cy.contextMenus(options));
-      }
-    },
-    [cy]
-  );
+            show: true,
+          },
+        ],
+        menuItemClasses: ["context-menu-item"],
+        contextMenuClasses: ["context-menu"],
+      };
+      setContextMenu(cy.contextMenus(options));
+    }
+  }, [MLLLayout, addToFilter, cy, removeFromFilter]);
 
-  useEffect(
-    function() {
-      if (layout) {
-        const l = filteredElements ? filteredElements.layout(layout) : cy.layout(layout);
-        setLoaderText("Applying layout, please wait ...");
-        l.pon("layoutstop").then(function(e) {
-          setLoaderText(undefined);
-        });
-        l.run();
-      }
-    },
-    [layout]
-  );
+  useEffect(() => {
+    if (layout) {
+      const l = filteredElements ? filteredElements.layout(layout) : cy.layout(layout);
+      setLoaderText("Applying layout, please wait ...");
+      l.pon("layoutstop").then(e => {
+        setLoaderText(undefined);
+      });
+      l.run();
+    }
+  }, [cy, filteredElements, layout]);
 
   const randomLayout = () => {
     setLayout(CYTOSCAPE_COLA_CONFIG);
@@ -333,7 +335,7 @@ const Visualizer = props => {
   const MLLLayout = () => {
     setLayout({
       name: "preset",
-      positions: function(n) {
+      positions(n) {
         return MLLPositions[n.id()];
       },
     });
@@ -450,12 +452,7 @@ const Visualizer = props => {
     });
     cy.json({ elements: { nodes: visibleNodes } });
     cy.add(visibleEdges);
-    cy.remove(
-      cy.filter(
-        ele =>
-          ele.isNode() && !ele.degree() && !ele.data().group.includes("main")
-      )
-    );
+    cy.remove(cy.filter(ele => ele.isNode() && !ele.degree() && !ele.data().group.includes("main")));
     clearFilter();
     registerEventListeners();
   };
@@ -524,7 +521,7 @@ const Visualizer = props => {
   };
 
   const search = id => {
-    cy.batch(function() {
+    cy.batch(() => {
       const selected = cy.nodes(`[id @= "${id}"]`);
       if (selected.size()) {
         selected.select();
@@ -596,7 +593,7 @@ const Visualizer = props => {
         color="primary"
         variant="contained"
         style={{
-          position: "absolute",
+          position: "fixed",
           right: 0,
           top: 45,
           borderTopRightRadius: 0,
@@ -608,7 +605,7 @@ const Visualizer = props => {
       >
         <MenuIcon />
       </Button>
-      <Drawer anchor="right" open={isDrawerOpen} onClose={() => setDrawerOpen(false)}>
+      <Drawer style={{ position: "fixed" }} anchor="right" open={isDrawerOpen} onClose={() => setDrawerOpen(false)}>
         <div className="annotation-toggle-wrapper">
           <Paper style={{ display: "flex", marginBottom: 15, padding: 5, paddingLeft: 15 }}>
             <InputBase
@@ -635,23 +632,27 @@ const Visualizer = props => {
               </Typography>
             </ExpansionPanelSummary>
             <ExpansionPanelDetails>
-              {nodeTypes.map(n => (
-                <FormControlLabel
-                  control={
-                    <Checkbox
-                      color="primary"
-                      defaultChecked={visibleNodeTypes.includes(n)}
-                      onChange={e => {
-                        return setVisibleNodeTypes(va =>
-                          e.target.checked ? (va.includes(n) ? va : [...va, n]) : va.filter(a => a !== n)
-                        );
-                      }}
+              <div>
+                {nodeTypes.map(n => (
+                  <div key={n} style={{ display: "block" }}>
+                    <FormControlLabel
+                      control={
+                        <Checkbox
+                          color="primary"
+                          defaultChecked={visibleNodeTypes.includes(n)}
+                          onChange={e => {
+                            return setVisibleNodeTypes(va =>
+                              e.target.checked ? (va.includes(n) ? va : [...va, n]) : va.filter(a => a !== n)
+                            );
+                          }}
+                        />
+                      }
+                      label={n}
+                      key={n}
                     />
-                  }
-                  label={n}
-                  key={n}
-                />
-              ))}
+                  </div>
+                ))}
+              </div>
             </ExpansionPanelDetails>
           </ExpansionPanel>
           <ExpansionPanel defaultExpanded={true}>
@@ -661,23 +662,27 @@ const Visualizer = props => {
               </Typography>
             </ExpansionPanelSummary>
             <ExpansionPanelDetails>
-              {linkTypes.map(n => (
-                <FormControlLabel
-                  control={
-                    <Checkbox
-                      color="primary"
-                      defaultChecked={visibleLinkTypes.includes(n)}
-                      onChange={e => {
-                        return setVisibleLinkTypes(va =>
-                          e.target.checked ? (va.includes(n) ? va : [...va, n]) : va.filter(a => a !== n)
-                        );
-                      }}
+              <div>
+                {linkTypes.map(n => (
+                  <div key={n} style={{ display: "block" }}>
+                    <FormControlLabel
+                      control={
+                        <Checkbox
+                          color="primary"
+                          defaultChecked={visibleLinkTypes.includes(n)}
+                          onChange={e => {
+                            return setVisibleLinkTypes(va =>
+                              e.target.checked ? (va.includes(n) ? va : [...va, n]) : va.filter(a => a !== n)
+                            );
+                          }}
+                        />
+                      }
+                      label={n}
+                      key={n}
                     />
-                  }
-                  label={n}
-                  key={n}
-                />
-              ))}
+                  </div>
+                ))}
+              </div>
             </ExpansionPanelDetails>
           </ExpansionPanel>
           <ExpansionPanel defaultExpanded={true}>

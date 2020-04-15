@@ -40,6 +40,8 @@ const parseFreeCallMetadata = ({ data }) => ({
   "snet-free-call-user-id": data["snet-free-call-user-id"],
   "snet-current-block-number": `${data["snet-current-block-number"]}`,
   "snet-payment-channel-signature-bin": parseSignature(data["snet-payment-channel-signature-bin"]),
+  "snet-free-call-auth-token-bin": parseSignature(data["snet-free-call-auth-token-bin"]),
+  "snet-free-call-token-expiry-block": `${data["snet-free-call-token-expiry-block"]}`,
 });
 
 const metadataGenerator = (serviceRequestErrorHandler, groupId) => async (serviceClient, serviceName, method) => {
@@ -84,7 +86,25 @@ const paidCallMetadataGenerator = serviceRequestErrorHandler => async (channelId
   }
 };
 
-const generateOptions = (callType, wallet, serviceRequestErrorHandler, groupInfo) => {
+const stagingMetadataGenerator = (orgId, serviceId, serviceRequestErrorHandler) => async () => {
+  try {
+    sdk = await initSdk();
+    const dataForSignature = [
+      { t: "string", v: "__authorized_user" },
+      { t: "string", v: orgId },
+      { t: "string", v: serviceId },
+    ];
+
+    const sha3Message = sdk._web3.utils.soliditySha3(...dataForSignature);
+    const signature = await sdk.account._identity.signData(sha3Message);
+    const b64Signature = parseSignature(signature);
+    return { "snet-payment-type": "allowed-user", "snet-allowed-user-signature-bin": b64Signature };
+  } catch (e) {
+    serviceRequestErrorHandler(e);
+  }
+};
+
+const generateOptions = (callType, wallet, serviceRequestErrorHandler, groupInfo, org_id, service_id) => {
   if (process.env.REACT_APP_SANDBOX) {
     return {
       endpoint: process.env.REACT_APP_SANDBOX_SERVICE_ENDPOINT,
@@ -92,6 +112,9 @@ const generateOptions = (callType, wallet, serviceRequestErrorHandler, groupInfo
     };
   }
   if (callType === callTypes.FREE) {
+    if (process.env.REACT_APP_STAGING_ENVIRONMENT === "true") {
+      return { metadataGenerator: stagingMetadataGenerator(org_id, service_id, serviceRequestErrorHandler) };
+    }
     return { metadataGenerator: metadataGenerator(serviceRequestErrorHandler, groupInfo.group_id) };
   }
   if (wallet && wallet.type === walletTypes.METAMASK) {
@@ -215,7 +238,7 @@ export const createServiceClient = (
   if (sdk && channel) {
     sdk.paymentChannelManagementStrategy = new ProxyPaymentChannelManagementStrategy(channel);
   }
-  const options = generateOptions(callType, wallet, serviceRequestErrorHandler, groupInfo);
+  const options = generateOptions(callType, wallet, serviceRequestErrorHandler, groupInfo, org_id, service_id);
   const serviceClient = new ServiceClient(
     sdk,
     org_id,
